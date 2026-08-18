@@ -1,0 +1,299 @@
+name: Update LeetCode README
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - README.md
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Generate README
+        run: |
+          cat > generate_readme.py <<'PY'
+          import os
+          import re
+          import requests
+
+          REPO = "https://github.com/${{ github.repository }}"
+          GRAPHQL_URL = "https://leetcode.com/graphql"
+
+          QUERY = """
+          query problemsetQuestionList(
+            $categorySlug: String,
+            $limit: Int,
+            $skip: Int,
+            $filters: QuestionListFilterInput
+          ) {
+            problemsetQuestionList: questionList(
+              categorySlug: $categorySlug
+              limit: $limit
+              skip: $skip
+              filters: $filters
+            ) {
+              total: totalNum
+              questions: data {
+                questionFrontendId
+                title
+                titleSlug
+                difficulty
+                topicTags {
+                  name
+                  slug
+                }
+              }
+            }
+          }
+          """
+
+          def get_leetcode_problems():
+              problems = {}
+              skip = 0
+              limit = 100
+
+              while True:
+                  variables = {
+                      "categorySlug": "",
+                      "skip": skip,
+                      "limit": limit,
+                      "filters": {}
+                  }
+
+                  response = requests.post(
+                      GRAPHQL_URL,
+                      json={
+                          "query": QUERY,
+                          "variables": variables
+                      },
+                      headers={
+                          "Content-Type": "application/json",
+                          "User-Agent": "Mozilla/5.0"
+                      },
+                      timeout=30
+                  )
+
+                  response.raise_for_status()
+                  data = response.json()
+
+                  if "errors" in data:
+                      raise Exception(data["errors"])
+
+                  result = data["data"]["problemsetQuestionList"]
+                  questions = result["questions"]
+
+                  for question in questions:
+                      problems[question["titleSlug"]] = question
+
+                  if len(questions) < limit:
+                      break
+
+                  skip += limit
+
+              return problems
+
+
+          def get_repo_problems():
+              problems = []
+
+              for name in os.listdir("."):
+                  if not os.path.isdir(name):
+                      continue
+
+                  if name.startswith("."):
+                      continue
+
+                  match = re.match(r"^(\d+)-(.+)$", name)
+
+                  if not match:
+                      continue
+
+                  number = match.group(1)
+                  slug = match.group(2)
+
+                  problems.append({
+                      "number": int(number),
+                      "folder": name,
+                      "slug": slug
+                  })
+
+              return sorted(problems, key=lambda x: x["number"])
+
+
+          print("Fetching LeetCode problem data...")
+
+          leetcode = get_leetcode_problems()
+          repo_problems = get_repo_problems()
+
+          topics = {}
+
+          rows = []
+
+          for problem in repo_problems:
+              slug = problem["slug"]
+              number = problem["number"]
+              folder = problem["folder"]
+
+              question = leetcode.get(slug)
+
+              if not question:
+                  print(f"Warning: Problem not found on LeetCode: {slug}")
+                  continue
+
+              title = question["title"]
+              difficulty = question["difficulty"]
+
+              tags = [
+                  tag["name"]
+                  for tag in question.get("topicTags", [])
+              ]
+
+              for tag in tags:
+                  topics.setdefault(tag, []).append(problem)
+
+              solution_link = f"{REPO}/tree/main/{folder}"
+
+              rows.append({
+                  "number": number,
+                  "title": title,
+                  "difficulty": difficulty,
+                  "tags": tags,
+                  "link": solution_link
+              })
+
+
+          def difficulty_badge(difficulty):
+              if difficulty == "Easy":
+                  return "🟢 Easy"
+              elif difficulty == "Medium":
+                  return "🟡 Medium"
+              elif difficulty == "Hard":
+                  return "🔴 Hard"
+              return difficulty
+
+
+          total = len(rows)
+
+          easy = sum(
+              1 for row in rows
+              if row["difficulty"] == "Easy"
+          )
+
+          medium = sum(
+              1 for row in rows
+              if row["difficulty"] == "Medium"
+          )
+
+          hard = sum(
+              1 for row in rows
+              if row["difficulty"] == "Hard"
+          )
+
+
+          readme = []
+
+          readme.append("# LeetCode Solutions")
+          readme.append("")
+          readme.append(
+              "My solutions to LeetCode problems, organized by "
+              "problem number and topic."
+          )
+          readme.append("")
+
+          readme.append("## 📊 Progress")
+          readme.append("")
+          readme.append(f"- **Total Solved:** {total}")
+          readme.append(f"- 🟢 **Easy:** {easy}")
+          readme.append(f"- 🟡 **Medium:** {medium}")
+          readme.append(f"- 🔴 **Hard:** {hard}")
+          readme.append("")
+
+          readme.append("## 🧩 Topics")
+          readme.append("")
+
+          if topics:
+              for topic in sorted(topics):
+                  readme.append(
+                      f"- **{topic}** — {len(topics[topic])} problem(s)"
+                  )
+
+          readme.append("")
+
+          readme.append("## 📝 Problems")
+          readme.append("")
+
+          if rows:
+              readme.append(
+                  "| # | Problem | Difficulty | Topics | Solution |"
+              )
+              readme.append(
+                  "|---:|---|---|---|---|"
+              )
+
+              for row in rows:
+                  tags = ", ".join(row["tags"])
+
+                  readme.append(
+                      f"| {row['number']} "
+                      f"| [{row['title']}]"
+                      f"(https://leetcode.com/problems/"
+                      f"{row['title'].lower().replace(' ', '-')}/) "
+                      f"| {difficulty_badge(row['difficulty'])} "
+                      f"| {tags} "
+                      f"| [View Solution]({row['link']}) |"
+                  )
+
+          else:
+              readme.append(
+                  "No LeetCode solutions have been added yet."
+              )
+
+          readme.append("")
+          readme.append("---")
+          readme.append("")
+          readme.append(
+              "⭐ This README is automatically updated using GitHub Actions."
+          )
+          readme.append("")
+
+          with open("README.md", "w", encoding="utf-8") as file:
+              file.write("\n".join(readme))
+
+          print("README generated successfully!")
+          PY
+
+          python generate_readme.py
+
+      - name: Commit README changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add README.md
+
+          if git diff --cached --quiet; then
+            echo "No README changes."
+          else
+            git commit -m "docs: update LeetCode README"
+            git push
+          fi
